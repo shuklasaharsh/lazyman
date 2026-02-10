@@ -1,7 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -97,10 +100,17 @@ func GetManContent(name, section string) (string, error) {
 
 // SearchManPages searches for man pages by keyword
 func SearchManPages(query string) ([]ManPage, error) {
+	// If query is "." or empty, return all pages
+	if query == "." || query == "" {
+		return GetManPages()
+	}
+
 	cmd := exec.Command("man", "-k", query)
 	output, err := cmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("search failed: %w", err)
+		// man -k returns exit status 1 when no results found, which is not really an error
+		// Just return empty list
+		return []ManPage{}, nil
 	}
 
 	lines := strings.Split(string(output), "\n")
@@ -154,4 +164,42 @@ func getManPaths() []string {
 	}
 
 	return paths
+}
+
+// GetRawManContent reads the raw man page file directly (much faster than calling man command)
+func GetRawManContent(path string) (string, error) {
+	// Check if file is gzipped
+	if strings.HasSuffix(path, ".gz") {
+		return readGzippedFile(path)
+	}
+
+	// Read regular file
+	content, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+
+	return string(content), nil
+}
+
+// readGzippedFile reads and decompresses a gzipped file
+func readGzippedFile(path string) (string, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer file.Close()
+
+	gz, err := gzip.NewReader(file)
+	if err != nil {
+		return "", err
+	}
+	defer gz.Close()
+
+	var buf bytes.Buffer
+	if _, err := io.Copy(&buf, gz); err != nil {
+		return "", err
+	}
+
+	return buf.String(), nil
 }

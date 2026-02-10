@@ -12,6 +12,7 @@ A fast, beautiful TUI (Terminal User Interface) for browsing and reading manual 
 - 📖 **Smooth Reading** - Read man pages with vim-style navigation
 - 🎨 **Beautiful UI** - Color-coded interface built with Bubble Tea
 - ⌨️ **Keyboard-driven** - Efficient keyboard shortcuts for power users
+- 🗂️ **Deep Search** (In Beta) - A deep search using pre-built indices for in-depth lookups.
 
 ## Installation
 
@@ -32,13 +33,24 @@ go install github.com/shuklasaharsh/lazyman@latest
 Simply run:
 
 ```bash
-./lazymanuals
+./lazyman
 ```
 
 Or if installed:
 
 ```bash
 lazyman
+```
+
+Deep Search:
+- For the First time:
+```bash
+lazyman -S # To build indices
+```
+
+- Next time
+```bash
+lazyman -S uv_loop 
 ```
 
 ### Keyboard Shortcuts
@@ -74,6 +86,7 @@ lazyman
 - [Bubble Tea](https://github.com/charmbracelet/bubbletea) - TUI framework
 - [Lipgloss](https://github.com/charmbracelet/lipgloss) - Style definitions
 - [Bubbles](https://github.com/charmbracelet/bubbles) - TUI components
+- [Bleve](https://github.com/blevesearch/bleve) - Full-text search engine
 
 ## Contributing
 

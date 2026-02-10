@@ -29,27 +29,28 @@ type SectionFilter struct {
 
 // Model represents the application state
 type Model struct {
-	mode               viewMode
-	manPages           []ManPage
-	filteredPages      []ManPage
-	cursor             int
-	viewport           viewport.Model
-	previewPort        viewport.Model
-	searchInput        textinput.Model
-	detailSearchInput  textinput.Model
-	currentContent     string
-	previewContent     string
-	searchQuery        string
-	searchMatches      []int // line numbers with matches
-	currentMatch       int   // index in searchMatches
-	sectionFilters     []SectionFilter
-	initialQuery       string
-	noMatchSuggestions []ManPage
-	width              int
-	height             int
-	err                error
-	loading            bool
-	loadingPreview     bool
+	mode                viewMode
+	manPages            []ManPage
+	filteredPages       []ManPage
+	cursor              int
+	viewport            viewport.Model
+	previewPort         viewport.Model
+	searchInput         textinput.Model
+	detailSearchInput   textinput.Model
+	currentContent      string
+	previewContent      string
+	searchQuery         string
+	searchMatches       []int // line numbers with matches
+	currentMatch        int   // index in searchMatches
+	sectionFilters      []SectionFilter
+	initialQuery        string
+	noMatchSuggestions  []ManPage
+	searchResultMatches map[string][]string // map of "name(section)" -> matches for search results
+	width               int
+	height              int
+	err                 error
+	loading             bool
+	loadingPreview      bool
 }
 
 // Styles
@@ -240,7 +241,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Load preview for first item
 		if len(m.filteredPages) > 0 {
 			page := m.filteredPages[0]
-			cmds = append(cmds, loadPreview(page.Name, page.Section))
+			// Check if we have search matches for this page
+			key := fmt.Sprintf("%s(%s)", page.Name, page.Section)
+			if matches, exists := m.searchResultMatches[key]; exists && len(matches) > 0 {
+				// Show matches immediately without loading man page
+				m.showSearchMatches(matches)
+			} else {
+				cmds = append(cmds, loadPreview(page.Name, page.Section))
+			}
 		}
 
 	case manContentLoadedMsg:
@@ -248,6 +256,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.viewport.SetContent(msg.content)
 		m.mode = detailView
 		m.viewport.GotoTop()
+
+		// If there's an initial query from index search, auto-highlight it
+		if m.initialQuery != "" && m.searchQuery == "" {
+			m.searchQuery = m.initialQuery
+			m.searchMatches = m.findMatches(m.initialQuery)
+			if len(m.searchMatches) > 0 {
+				m.currentMatch = 0
+				m.viewport.SetYOffset(m.searchMatches[0])
+			}
+		}
 
 	case previewLoadedMsg:
 		m.previewContent = msg.content
@@ -263,8 +281,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.mode {
 		case listView:
 			switch msg.String() {
-			case "ctrl+c", "q":
+			case "ctrl+c":
 				return m, tea.Quit
+
+			case "q":
+				// If there's an active search, clear it; otherwise quit
+				if m.searchInput.Value() != "" {
+					m.searchInput.SetValue("")
+					m.filteredPages = m.applyFilters(m.manPages)
+					m.cursor = 0
+					if len(m.filteredPages) > 0 {
+						page := m.filteredPages[0]
+						m.loadingPreview = true
+						cmds = append(cmds, loadPreview(page.Name, page.Section))
+					}
+				} else {
+					return m, tea.Quit
+				}
 
 			case "up", "k":
 				if m.cursor > 0 {
@@ -276,8 +309,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					if len(pages) > 0 {
 						page := pages[m.cursor]
-						m.loadingPreview = true
-						cmds = append(cmds, loadPreview(page.Name, page.Section))
+						// Check if we have search matches
+						key := fmt.Sprintf("%s(%s)", page.Name, page.Section)
+						if matches, exists := m.searchResultMatches[key]; exists && len(matches) > 0 {
+							m.showSearchMatches(matches)
+						} else {
+							m.loadingPreview = true
+							cmds = append(cmds, loadPreview(page.Name, page.Section))
+						}
 					}
 				}
 
@@ -295,8 +334,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 					if len(pages) > 0 {
 						page := pages[m.cursor]
-						m.loadingPreview = true
-						cmds = append(cmds, loadPreview(page.Name, page.Section))
+						// Check if we have search matches
+						key := fmt.Sprintf("%s(%s)", page.Name, page.Section)
+						if matches, exists := m.searchResultMatches[key]; exists && len(matches) > 0 {
+							m.showSearchMatches(matches)
+						} else {
+							m.loadingPreview = true
+							cmds = append(cmds, loadPreview(page.Name, page.Section))
+						}
 					}
 				}
 
@@ -346,11 +391,42 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case detailView:
 			switch msg.String() {
-			case "ctrl+c", "q", "esc":
+			case "ctrl+c", "q":
 				m.mode = listView
 				m.currentContent = ""
 				m.searchQuery = ""
 				m.searchMatches = nil
+				// Clear the search input and restore full list
+				m.searchInput.SetValue("")
+				m.filteredPages = m.applyFilters(m.manPages)
+				m.cursor = 0
+				// Load preview for first item
+				if len(m.filteredPages) > 0 {
+					page := m.filteredPages[0]
+					m.loadingPreview = true
+					cmds = append(cmds, loadPreview(page.Name, page.Section))
+				}
+
+			case "esc":
+				// Clear search highlight if active, otherwise go back
+				if m.searchQuery != "" {
+					m.searchQuery = ""
+					m.searchMatches = nil
+					m.currentMatch = 0
+				} else {
+					m.mode = listView
+					m.currentContent = ""
+					// Clear the search input and restore full list
+					m.searchInput.SetValue("")
+					m.filteredPages = m.applyFilters(m.manPages)
+					m.cursor = 0
+					// Load preview for first item
+					if len(m.filteredPages) > 0 {
+						page := m.filteredPages[0]
+						m.loadingPreview = true
+						cmds = append(cmds, loadPreview(page.Name, page.Section))
+					}
+				}
 
 			case "up", "k":
 				m.viewport.LineUp(1)
@@ -400,19 +476,38 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch msg.String() {
 			case "esc":
 				m.mode = listView
+				// Restore original list
+				m.filteredPages = m.applyFilters(m.manPages)
+				m.cursor = 0
+				if len(m.filteredPages) > 0 {
+					page := m.filteredPages[0]
+					m.loadingPreview = true
+					cmds = append(cmds, loadPreview(page.Name, page.Section))
+				}
 
 			case "enter":
-				query := m.searchInput.Value()
-				if query != "" {
-					m.mode = listView
-					m.loading = true
-					return m, searchManPages(query)
-				}
+				// Just close search mode, results are already updated
 				m.mode = listView
 
 			default:
 				m.searchInput, cmd = m.searchInput.Update(msg)
 				cmds = append(cmds, cmd)
+
+				// Trigger search on each keystroke
+				query := m.searchInput.Value()
+				if query != "" {
+					// Search and update filtered pages in real-time
+					cmds = append(cmds, searchManPages(query))
+				} else {
+					// If query is empty, show all pages
+					m.filteredPages = m.applyFilters(m.manPages)
+					m.cursor = 0
+					if len(m.filteredPages) > 0 {
+						page := m.filteredPages[0]
+						m.loadingPreview = true
+						cmds = append(cmds, loadPreview(page.Name, page.Section))
+					}
+				}
 			}
 
 		case detailSearchView:
@@ -548,6 +643,64 @@ func (m Model) findFuzzySuggestions(query string, allPages []ManPage) []ManPage 
 	}
 	for i := 0; i < max; i++ {
 		result = append(result, scored[i].page)
+	}
+
+	return result
+}
+
+// showSearchMatches displays search result matches in the preview pane
+func (m *Model) showSearchMatches(matches []string) {
+	var content strings.Builder
+	highlightStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("226")).
+		Foreground(lipgloss.Color("0")).
+		Bold(true)
+
+	if len(matches) == 0 {
+		content.WriteString("No matches found in content.")
+	} else {
+		for i, match := range matches {
+			if i > 0 {
+				content.WriteString("\n\n")
+			}
+			content.WriteString(fmt.Sprintf("─── Match %d ───\n", i+1))
+			// Highlight query in match
+			highlighted := m.highlightText(match, m.initialQuery, highlightStyle)
+			content.WriteString(highlighted)
+		}
+	}
+
+	m.previewPort.SetContent(content.String())
+	m.previewPort.GotoTop()
+	m.loadingPreview = false
+}
+
+// highlightText highlights occurrences of query in text
+func (m Model) highlightText(text, query string, style lipgloss.Style) string {
+	queryLower := strings.ToLower(query)
+	textLower := strings.ToLower(text)
+
+	if !strings.Contains(textLower, queryLower) {
+		return text
+	}
+
+	result := ""
+	remaining := text
+	remainingLower := textLower
+
+	for {
+		idx := strings.Index(remainingLower, queryLower)
+		if idx == -1 {
+			result += remaining
+			break
+		}
+
+		result += remaining[:idx]
+		matchEnd := idx + len(query)
+		result += style.Render(remaining[idx:matchEnd])
+
+		remaining = remaining[matchEnd:]
+		remainingLower = remainingLower[matchEnd:]
 	}
 
 	return result
@@ -791,8 +944,12 @@ func (m Model) renderDetailView() string {
 		b.WriteString("\n\n")
 	}
 
-	// Content viewport
-	b.WriteString(m.viewport.View())
+	// Content viewport - with highlighting if search is active
+	if m.searchQuery != "" {
+		b.WriteString(m.renderHighlightedContent())
+	} else {
+		b.WriteString(m.viewport.View())
+	}
 	b.WriteString("\n")
 
 	// Help
@@ -808,6 +965,60 @@ func (m Model) renderDetailView() string {
 	return b.String()
 }
 
+// renderHighlightedContent renders the viewport content with search terms highlighted
+func (m Model) renderHighlightedContent() string {
+	lines := strings.Split(m.currentContent, "\n")
+
+	// Define highlight style
+	highlightStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("226")).
+		Foreground(lipgloss.Color("0")).
+		Bold(true)
+
+	// Get the visible range from viewport
+	yOffset := m.viewport.YOffset
+	visibleHeight := m.viewport.Height
+
+	var result strings.Builder
+	searchLower := strings.ToLower(m.searchQuery)
+
+	for i := yOffset; i < yOffset+visibleHeight && i < len(lines); i++ {
+		line := lines[i]
+		lineLower := strings.ToLower(line)
+
+		// Find and highlight all occurrences in this line
+		if strings.Contains(lineLower, searchLower) {
+			lastIndex := 0
+			for {
+				index := strings.Index(lineLower[lastIndex:], searchLower)
+				if index == -1 {
+					// No more matches, append rest of line
+					result.WriteString(line[lastIndex:])
+					break
+				}
+
+				// Append text before match
+				actualIndex := lastIndex + index
+				result.WriteString(line[lastIndex:actualIndex])
+
+				// Append highlighted match
+				matchEnd := actualIndex + len(m.searchQuery)
+				result.WriteString(highlightStyle.Render(line[actualIndex:matchEnd]))
+
+				lastIndex = matchEnd
+			}
+		} else {
+			result.WriteString(line)
+		}
+
+		if i < yOffset+visibleHeight-1 && i < len(lines)-1 {
+			result.WriteString("\n")
+		}
+	}
+
+	return result.String()
+}
+
 func (m Model) renderSearchView() string {
 	var b strings.Builder
 
@@ -817,9 +1028,49 @@ func (m Model) renderSearchView() string {
 
 	b.WriteString("  ")
 	b.WriteString(m.searchInput.View())
-	b.WriteString("\n\n")
+	b.WriteString("\n")
 
-	help := helpStyle.Render("enter search • esc cancel")
+	// Show real-time results count
+	if m.searchInput.Value() != "" {
+		resultInfo := statusStyle.Render(fmt.Sprintf("  Found %d matches", len(m.filteredPages)))
+		b.WriteString(resultInfo)
+		b.WriteString("\n\n")
+
+		// Show preview of first few results
+		maxResults := 10
+		if len(m.filteredPages) < maxResults {
+			maxResults = len(m.filteredPages)
+		}
+
+		for i := 0; i < maxResults; i++ {
+			page := m.filteredPages[i]
+			line := fmt.Sprintf("%s(%s)", page.Name, page.Section)
+			if page.Description != "" {
+				line += " - " + page.Description
+			}
+
+			// Truncate if too long
+			if len(line) > 80 {
+				line = line[:77] + "..."
+			}
+
+			if i == 0 {
+				b.WriteString(selectedItemStyle.Render("▸ " + line))
+			} else {
+				b.WriteString(itemStyle.Render(line))
+			}
+			b.WriteString("\n")
+		}
+
+		if len(m.filteredPages) > maxResults {
+			more := statusStyle.Render(fmt.Sprintf("  ... and %d more", len(m.filteredPages)-maxResults))
+			b.WriteString(more)
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("\n")
+	help := helpStyle.Render("type to search • enter confirm • esc cancel")
 	b.WriteString(help)
 
 	return b.String()

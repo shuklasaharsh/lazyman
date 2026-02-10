@@ -33,3 +33,6 @@ lazyman
 # Editor/IDE
 .idea/
 .vscode/
+
+# LazyMan search index
+.lazyman_index/
