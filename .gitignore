@@ -27,6 +27,9 @@ go.work.sum
 # env file
 .env
 
+# Build
+lazyman
+
 # Editor/IDE
 .idea/
 .vscode/
