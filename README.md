@@ -1,5 +1,7 @@
 # LazyMan
 
+![img.png](screenshots/img.png)
+
 A fast, beautiful TUI (Terminal User Interface) for browsing and reading manual pages, inspired by [lazygit](https://github.com/jesseduffield/lazygit).
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
